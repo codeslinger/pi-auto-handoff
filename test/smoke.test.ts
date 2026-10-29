@@ -6,7 +6,6 @@
  * `serializeConversation` from Pi, so the prompt construction is exercised
  * end-to-end; only the LLM call is faked.
  */
-
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -19,317 +18,386 @@ import autoHandoff from "../src/auto-handoff.ts";
 type Any = any;
 
 interface FakeExtension {
-	handlers: Map<string, (event: Any, ctx: Any) => unknown>;
-	commands: Map<string, { description?: string; handler: (args: string, ctx: Any) => Promise<void> }>;
+  handlers: Map<string, (event: Any, ctx: Any) => unknown>;
+  commands: Map<
+    string,
+    { description?: string; handler: (args: string, ctx: Any) => Promise<void> }
+  >;
 }
 
 function loadExtension(): FakeExtension {
-	for (const key of Object.keys(process.env)) {
-		if (key.startsWith("AUTO_HANDOFF_")) delete process.env[key];
-	}
-	const handlers = new Map<string, (event: Any, ctx: Any) => unknown>();
-	const commands = new Map<string, { description?: string; handler: (args: string, ctx: Any) => Promise<void> }>();
-	const pi: Any = {
-		on: (event: string, handler: (event: Any, ctx: Any) => unknown) => {
-			handlers.set(event, handler);
-			return () => handlers.delete(event);
-		},
-		registerCommand: (name: string, options: Any) => {
-			commands.set(name, options);
-		},
-	};
-	autoHandoff(pi);
-	return { handlers, commands };
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("AUTO_HANDOFF_")) delete process.env[key];
+  }
+  const handlers = new Map<string, (event: Any, ctx: Any) => unknown>();
+  const commands = new Map<
+    string,
+    { description?: string; handler: (args: string, ctx: Any) => Promise<void> }
+  >();
+  const pi: Any = {
+    on: (event: string, handler: (event: Any, ctx: Any) => unknown) => {
+      handlers.set(event, handler);
+      return () => handlers.delete(event);
+    },
+    registerCommand: (name: string, options: Any) => {
+      commands.set(name, options);
+    },
+  };
+  autoHandoff(pi);
+  return { handlers, commands };
 }
 
 function fakeContext(overrides: Partial<Any> = {}): Any {
-	const notifications: string[] = [];
-	return {
-		notifications,
-		hasUI: true,
-		ui: {
-			notify: (message: string) => {
-				notifications.push(message);
-			},
-		},
-		getContextUsage: () => ({ tokens: 85_000, contextWindow: 100_000, percent: 85 }),
-		getSystemPrompt: () => "You are a coding agent.",
-		sessionManager: { getSessionFile: () => "/tmp/fake-sessions/session.jsonl" },
-		...overrides,
-	};
+  const notifications: string[] = [];
+  return {
+    notifications,
+    hasUI: true,
+    ui: {
+      notify: (message: string) => {
+        notifications.push(message);
+      },
+    },
+    getContextUsage: () => ({
+      tokens: 85_000,
+      contextWindow: 100_000,
+      percent: 85,
+    }),
+    getSystemPrompt: () => "You are a coding agent.",
+    sessionManager: {
+      getSessionFile: () => "/tmp/fake-sessions/session.jsonl",
+    },
+    ...overrides,
+  };
 }
 
 function fakePreparation(overrides: Partial<Any> = {}): Any {
-	return {
-		firstKeptEntryId: "entry-9",
-		messagesToSummarize: [
-			{
-				role: "user",
-				content: [{ type: "text", text: "please fix the parser bug in src/parser.ts" }],
-				timestamp: Date.now(),
-			},
-			{
-				role: "assistant",
-				content: [{ type: "text", text: "I read src/parser.ts and found an off-by-one." }],
-				timestamp: Date.now(),
-			},
-		],
-		turnPrefixMessages: [],
-		isSplitTurn: false,
-		tokensBefore: 123_456,
-		previousSummary: undefined,
-		fileOps: { read: new Set(["src/parser.ts", "src/other.ts"]), written: new Set<string>(), edited: new Set(["src/parser.ts"]) },
-		settings: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-		...overrides,
-	};
+  return {
+    firstKeptEntryId: "entry-9",
+    messagesToSummarize: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "please fix the parser bug in src/parser.ts" },
+        ],
+        timestamp: Date.now(),
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "I read src/parser.ts and found an off-by-one.",
+          },
+        ],
+        timestamp: Date.now(),
+      },
+    ],
+    turnPrefixMessages: [],
+    isSplitTurn: false,
+    tokensBefore: 123_456,
+    previousSummary: undefined,
+    fileOps: {
+      read: new Set(["src/parser.ts", "src/other.ts"]),
+      written: new Set<string>(),
+      edited: new Set(["src/parser.ts"]),
+    },
+    settings: {
+      enabled: true,
+      reserveTokens: 16_384,
+      keepRecentTokens: 20_000,
+    },
+    ...overrides,
+  };
 }
 
-function fakeBeforeCompactEvent(preparation: Any, reason: string, armedSignal?: AbortSignal): Any {
-	return {
-		type: "session_before_compact",
-		preparation,
-		branchEntries: [],
-		customInstructions: "focus instructions",
-		reason,
-		willRetry: false,
-		signal: armedSignal ?? new AbortController().signal,
-	};
+function fakeBeforeCompactEvent(
+  preparation: Any,
+  reason: string,
+  armedSignal?: AbortSignal,
+): Any {
+  return {
+    type: "session_before_compact",
+    preparation,
+    branchEntries: [],
+    customInstructions: "focus instructions",
+    reason,
+    willRetry: false,
+    signal: armedSignal ?? new AbortController().signal,
+  };
 }
 
 function fakeModelRegistry(documentText: string): Any {
-	const calls: Any[] = [];
-	return {
-		calls,
-		complete: async (model: Any, context: Any, options: Any) => {
-			calls.push({ model, context, options });
-			return {
-				role: "assistant",
-				content: [{ type: "text", text: documentText }],
-				usage: { inputTokens: 1_000, outputTokens: 500 },
-				stopReason: "stop",
-				timestamp: Date.now(),
-			};
-		},
-	};
+  const calls: Any[] = [];
+  return {
+    calls,
+    complete: async (model: Any, context: Any, options: Any) => {
+      calls.push({ model, context, options });
+      return {
+        role: "assistant",
+        content: [{ type: "text", text: documentText }],
+        usage: { inputTokens: 1_000, outputTokens: 500 },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      };
+    },
+  };
 }
 
 const turnEndEvent: Any = {
-	type: "turn_end",
-	turnIndex: 0,
-	message: { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: Date.now() },
-	toolResults: [],
-	messageEntryId: "entry-10",
-	toolResultEntryIds: [],
+  type: "turn_end",
+  turnIndex: 0,
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text: "done" }],
+    timestamp: Date.now(),
+  },
+  toolResults: [],
+  messageEntryId: "entry-10",
+  toolResultEntryIds: [],
 };
 
 test("turn_end triggers compaction at or above the threshold and re-arms after completion", async () => {
-	const { handlers } = loadExtension();
-	const compactCalls: Any[] = [];
-	const ctx = fakeContext({ compact: (options: Any) => compactCalls.push(options) });
+  const { handlers } = loadExtension();
+  const compactCalls: Any[] = [];
+  const ctx = fakeContext({
+    compact: (options: Any) => compactCalls.push(options),
+  });
 
-	const turnEnd = handlers.get("turn_end")!;
+  const turnEnd = handlers.get("turn_end")!;
 
-	// Below threshold: no compaction.
-	(turnEnd as (event: Any, ctx: Any) => void)({ ...turnEndEvent }, {
-		...ctx,
-		getContextUsage: () => ({ tokens: 50_000, contextWindow: 100_000, percent: 50 }),
-	});
-	assert.equal(compactCalls.length, 0);
+  // Below threshold: no compaction.
+  (turnEnd as (event: Any, ctx: Any) => void)(
+    { ...turnEndEvent },
+    {
+      ...ctx,
+      getContextUsage: () => ({
+        tokens: 50_000,
+        contextWindow: 100_000,
+        percent: 50,
+      }),
+    },
+  );
+  assert.equal(compactCalls.length, 0);
 
-	// At/above threshold: compaction armed once with the threshold focus.
-	(turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
-	assert.equal(compactCalls.length, 1);
-	assert.match(String(compactCalls[0]?.customInstructions), /Threshold-triggered maintenance/);
+  // At/above threshold: compaction armed once with the threshold focus.
+  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  assert.equal(compactCalls.length, 1);
+  assert.match(
+    String(compactCalls[0]?.customInstructions),
+    /Threshold-triggered maintenance/,
+  );
 
-	// While armed, no second trigger.
-	(turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
-	assert.equal(compactCalls.length, 1);
+  // While armed, no second trigger.
+  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  assert.equal(compactCalls.length, 1);
 
-	// onComplete disarms; a later high-usage turn triggers again.
-	compactCalls[0]?.onComplete?.();
-	(turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
-	assert.equal(compactCalls.length, 2);
+  // onComplete disarms; a later high-usage turn triggers again.
+  compactCalls[0]?.onComplete?.();
+  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  assert.equal(compactCalls.length, 2);
 });
 
 test("session_before_compact produces a framed handoff summary with file lists", async () => {
-	const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-auto-handoff-"));
-	const { handlers } = loadExtension();
-	const registry = fakeModelRegistry("## Goal\nFix the parser bug\n\n## Next Steps\n1. Run the tests");
-	const ctx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: registry,
-		sessionManager: { getSessionFile: () => path.join(tmpDir, "session.jsonl") },
-	});
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-auto-handoff-"));
+  const { handlers } = loadExtension();
+  const registry = fakeModelRegistry(
+    "## Goal\nFix the parser bug\n\n## Next Steps\n1. Run the tests",
+  );
+  const ctx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: registry,
+    sessionManager: {
+      getSessionFile: () => path.join(tmpDir, "session.jsonl"),
+    },
+  });
 
-	// Arm via turn_end so the pass counts as ours.
-	const compactCalls: Any[] = [];
-	const compactCtx = { ...ctx, compact: (options: Any) => compactCalls.push(options) };
-	(handlers.get("turn_end") as Any)(turnEndEvent, compactCtx);
-	assert.equal(compactCalls.length, 1);
+  // Arm via turn_end so the pass counts as ours.
+  const compactCalls: Any[] = [];
+  const compactCtx = {
+    ...ctx,
+    compact: (options: Any) => compactCalls.push(options),
+  };
+  (handlers.get("turn_end") as Any)(turnEndEvent, compactCtx);
+  assert.equal(compactCalls.length, 1);
 
-	const result = (await (handlers.get("session_before_compact") as Any)(
-		fakeBeforeCompactEvent(fakePreparation(), "manual"),
-		ctx,
-	)) as Any;
+  const result = (await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation(), "manual"),
+    ctx,
+  )) as Any;
 
-	assert.ok(result?.compaction, "expected a compaction result");
-	const { summary, firstKeptEntryId, tokensBefore, usage, details } = result.compaction;
-	assert.equal(firstKeptEntryId, "entry-9");
-	assert.equal(tokensBefore, 123_456);
-	assert.equal(usage.inputTokens, 1_000);
-	assert.equal(details.method, "handoff");
+  assert.ok(result?.compaction, "expected a compaction result");
+  const { summary, firstKeptEntryId, tokensBefore, usage, details } =
+    result.compaction;
+  assert.equal(firstKeptEntryId, "entry-9");
+  assert.equal(tokensBefore, 123_456);
+  assert.equal(usage.inputTokens, 1_000);
+  assert.equal(details.method, "handoff");
 
-	// Framing + document + cumulative file tags.
-	assert.match(summary, /<handoff>/);
-	assert.match(summary, /prior instance of you/);
-	assert.match(summary, /## Goal/);
-	assert.match(summary, /<read-files>/);
-	assert.match(summary, /<modified-files>/);
-	assert.match(summary, /src\/parser\.ts/);
+  // Framing + document + cumulative file tags.
+  assert.match(summary, /<handoff>/);
+  assert.match(summary, /prior instance of you/);
+  assert.match(summary, /## Goal/);
+  assert.match(summary, /<read-files>/);
+  assert.match(summary, /<modified-files>/);
+  assert.match(summary, /src\/parser\.ts/);
 
-	// File ops: edited beats read; read-only files stay under <read-files>.
-	assert.deepEqual(details.modifiedFiles, ["src/parser.ts"]);
-	assert.deepEqual(details.readFiles, ["src/other.ts"]);
+  // File ops: edited beats read; read-only files stay under <read-files>.
+  assert.deepEqual(details.modifiedFiles, ["src/parser.ts"]);
+  assert.deepEqual(details.readFiles, ["src/other.ts"]);
 
-	// Saved to disk next to the session file.
-	assert.ok(details.savedPath?.startsWith(tmpDir));
-	const saved = await fs.readFile(details.savedPath, "utf8");
-	assert.match(saved, /## Goal/);
+  // Saved to disk next to the session file.
+  assert.ok(details.savedPath?.startsWith(tmpDir));
+  const saved = await fs.readFile(details.savedPath, "utf8");
+  assert.match(saved, /## Goal/);
 
-	// The oneshot request used the real serializer and compaction options.
-	assert.equal(registry.calls.length, 1);
-	assert.match(String(registry.calls[0]?.options?.cacheRetention), /none/);
-	assert.ok(registry.calls[0]?.options?.sessionId);
-	assert.match(String(registry.calls[0]?.context?.systemPrompt), /coding agent/);
-	const prompt = JSON.stringify(registry.calls[0]?.context?.messages);
-	assert.match(prompt, /please fix the parser bug/);
-	assert.match(prompt, /handoff document for another instance/);
+  // The oneshot request used the real serializer and compaction options.
+  assert.equal(registry.calls.length, 1);
+  assert.match(String(registry.calls[0]?.options?.cacheRetention), /none/);
+  assert.ok(registry.calls[0]?.options?.sessionId);
+  assert.match(
+    String(registry.calls[0]?.context?.systemPrompt),
+    /coding agent/,
+  );
+  const prompt = JSON.stringify(registry.calls[0]?.context?.messages);
+  assert.match(prompt, /please fix the parser bug/);
+  assert.match(prompt, /handoff document for another instance/);
 });
 
 test("unarmed manual /compact falls back to Pi's default summary", async () => {
-	const { handlers } = loadExtension();
-	const ctx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: fakeModelRegistry("## Goal\nshould not be used"),
-	});
+  const { handlers } = loadExtension();
+  const ctx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: fakeModelRegistry("## Goal\nshould not be used"),
+  });
 
-	const result = await (handlers.get("session_before_compact") as Any)(
-		fakeBeforeCompactEvent(fakePreparation(), "manual"),
-		ctx,
-	);
-	assert.equal(result, undefined);
+  const result = await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation(), "manual"),
+    ctx,
+  );
+  assert.equal(result, undefined);
 });
 
 test("threshold and overflow passes get handoff documents even when unarmed", async () => {
-	const { handlers } = loadExtension();
-	for (const reason of ["threshold", "overflow"]) {
-		const ctx = fakeContext({
-			model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-			modelRegistry: fakeModelRegistry("## Goal\ndoc"),
-		});
-		const result = (await (handlers.get("session_before_compact") as Any)(
-			fakeBeforeCompactEvent(fakePreparation(), reason),
-			ctx,
-		)) as Any;
-		assert.ok(result?.compaction, `${reason} should produce a handoff compaction`);
-	}
+  const { handlers } = loadExtension();
+  for (const reason of ["threshold", "overflow"]) {
+    const ctx = fakeContext({
+      model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+      modelRegistry: fakeModelRegistry("## Goal\ndoc"),
+    });
+    const result = (await (handlers.get("session_before_compact") as Any)(
+      fakeBeforeCompactEvent(fakePreparation(), reason),
+      ctx,
+    )) as Any;
+    assert.ok(
+      result?.compaction,
+      `${reason} should produce a handoff compaction`,
+    );
+  }
 });
 
 test("previous summary file lists are merged cumulatively", async () => {
-	const { handlers } = loadExtension();
-	const ctx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: fakeModelRegistry("## Goal\ndoc"),
-	});
-	const previousSummary = `Context replaced.\n<handoff>old doc</handoff>\n\n<read-files>\nold/one.ts\n</read-files>\n<modified-files>\nold/two.ts\n</modified-files>`;
+  const { handlers } = loadExtension();
+  const ctx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: fakeModelRegistry("## Goal\ndoc"),
+  });
+  const previousSummary = `Context replaced.\n<handoff>old doc</handoff>\n\n<read-files>\nold/one.ts\n</read-files>\n<modified-files>\nold/two.ts\n</modified-files>`;
 
-	const result = (await (handlers.get("session_before_compact") as Any)(
-		fakeBeforeCompactEvent(fakePreparation({ previousSummary }), "threshold"),
-		ctx,
-	)) as Any;
-	const details = result.compaction.details;
-	assert.ok(details.readFiles.includes("old/one.ts"));
-	assert.ok(details.modifiedFiles.includes("old/two.ts"));
-	assert.ok(details.modifiedFiles.includes("src/parser.ts"));
+  const result = (await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation({ previousSummary }), "threshold"),
+    ctx,
+  )) as Any;
+  const details = result.compaction.details;
+  assert.ok(details.readFiles.includes("old/one.ts"));
+  assert.ok(details.modifiedFiles.includes("old/two.ts"));
+  assert.ok(details.modifiedFiles.includes("src/parser.ts"));
 });
 
 test("generation failure falls back to default compaction", async () => {
-	const { handlers } = loadExtension();
-	const ctx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: {
-			complete: async () => {
-				throw new Error("provider exploded");
-			},
-		},
-	});
+  const { handlers } = loadExtension();
+  const ctx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: {
+      complete: async () => {
+        throw new Error("provider exploded");
+      },
+    },
+  });
 
-	const result = await (handlers.get("session_before_compact") as Any)(
-		fakeBeforeCompactEvent(fakePreparation(), "threshold"),
-		ctx,
-	);
-	assert.equal(result, undefined);
+  const result = await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation(), "threshold"),
+    ctx,
+  );
+  assert.equal(result, undefined);
 });
 
 test("empty or aborted generation falls back to default compaction", async () => {
-	const { handlers } = loadExtension();
+  const { handlers } = loadExtension();
 
-	// Empty document.
-	const emptyCtx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: fakeModelRegistry("   "),
-	});
-	assert.equal(
-		await (handlers.get("session_before_compact") as Any)(fakeBeforeCompactEvent(fakePreparation(), "threshold"), emptyCtx),
-		undefined,
-	);
+  // Empty document.
+  const emptyCtx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: fakeModelRegistry("   "),
+  });
+  assert.equal(
+    await (handlers.get("session_before_compact") as Any)(
+      fakeBeforeCompactEvent(fakePreparation(), "threshold"),
+      emptyCtx,
+    ),
+    undefined,
+  );
 
-	// Aborted signal.
-	const controller = new AbortController();
-	controller.abort();
-	const abortedCtx = fakeContext({
-		model: { provider: "test", id: "test-model", contextWindow: 100_000 },
-		modelRegistry: fakeModelRegistry("## Goal\ndoc"),
-	});
-	assert.equal(
-		await (handlers.get("session_before_compact") as Any)(
-			fakeBeforeCompactEvent(fakePreparation(), "threshold", controller.signal),
-			abortedCtx,
-		),
-		undefined,
-	);
+  // Aborted signal.
+  const controller = new AbortController();
+  controller.abort();
+  const abortedCtx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: fakeModelRegistry("## Goal\ndoc"),
+  });
+  assert.equal(
+    await (handlers.get("session_before_compact") as Any)(
+      fakeBeforeCompactEvent(fakePreparation(), "threshold", controller.signal),
+      abortedCtx,
+    ),
+    undefined,
+  );
 });
 
 test("no model falls back to default compaction", async () => {
-	const { handlers } = loadExtension();
-	const ctx = fakeContext({ model: undefined });
-	const result = await (handlers.get("session_before_compact") as Any)(
-		fakeBeforeCompactEvent(fakePreparation(), "threshold"),
-		ctx,
-	);
-	assert.equal(result, undefined);
+  const { handlers } = loadExtension();
+  const ctx = fakeContext({ model: undefined });
+  const result = await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation(), "threshold"),
+    ctx,
+  );
+  assert.equal(result, undefined);
 });
 
 test("/handoff command arms a focused compaction and is idempotent while in flight", async () => {
-	const { handlers, commands } = loadExtension();
-	const compactCalls: Any[] = [];
-	const ctx = fakeContext({ compact: (options: Any) => compactCalls.push(options) });
+  const { handlers, commands } = loadExtension();
+  const compactCalls: Any[] = [];
+  const ctx = fakeContext({
+    compact: (options: Any) => compactCalls.push(options),
+  });
 
-	const handoff = commands.get("handoff")!;
-	assert.ok(handoff.description);
+  const handoff = commands.get("handoff")!;
+  assert.ok(handoff.description);
 
-	await handoff.handler("do the thing", ctx);
-	assert.equal(compactCalls.length, 1);
-	assert.equal(compactCalls[0]?.customInstructions, "do the thing");
+  await handoff.handler("do the thing", ctx);
+  assert.equal(compactCalls.length, 1);
+  assert.equal(compactCalls[0]?.customInstructions, "do the thing");
 
-	// Armed by the first call: a second invocation is a no-op until it settles.
-	await handoff.handler("again", ctx);
-	assert.equal(compactCalls.length, 1);
-	assert.match(String(ctx.notifications[0]), /Writing handoff document/);
+  // Armed by the first call: a second invocation is a no-op until it settles.
+  await handoff.handler("again", ctx);
+  assert.equal(compactCalls.length, 1);
+  assert.match(String(ctx.notifications[0]), /Writing handoff document/);
 
-	// Default focus when no args are given.
-	compactCalls[0]?.onError?.();
-	await handoff.handler("", ctx);
-	assert.equal(compactCalls.length, 2);
-	assert.match(String(compactCalls[1]?.customInstructions), /Threshold-triggered maintenance/);
+  // Default focus when no args are given.
+  compactCalls[0]?.onError?.();
+  await handoff.handler("", ctx);
+  assert.equal(compactCalls.length, 2);
+  assert.match(
+    String(compactCalls[1]?.customInstructions),
+    /Threshold-triggered maintenance/,
+  );
 });

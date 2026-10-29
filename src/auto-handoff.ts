@@ -31,15 +31,20 @@
  *   AUTO_HANDOFF_SAVE      "0"/"false" disables saving the document to disk
  *                          next to the session file (default enabled).
  */
-
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { uuidv7, type AssistantMessage, type Message, type Model } from "@earendil-works/pi-ai";
-
-type AnyModel = Model<any>;
-import type { ExtensionAPI, ExtensionContext, FileOperations } from "@earendil-works/pi-coding-agent";
-import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import { uuidv7 } from "@earendil-works/pi-ai";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  FileOperations,
+} from "@earendil-works/pi-coding-agent";
+import {
+  convertToLlm,
+  serializeConversation,
+} from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
 // Configuration
@@ -48,14 +53,14 @@ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-a
 const DEFAULT_THRESHOLD_PERCENT = 80;
 
 function envFlag(name: string, fallback: boolean): boolean {
-	const raw = process.env[name]?.trim().toLowerCase();
-	if (raw === undefined || raw === "") return fallback;
-	return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return fallback;
+  return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
 }
 
 function envNumber(name: string, fallback: number): number {
-	const raw = Number(process.env[name]?.trim());
-	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  const raw = Number(process.env[name]?.trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
 // ============================================================================
@@ -112,7 +117,7 @@ Use exactly this structure:
 
 /** omp's auto-handoff-threshold-focus.md: focus for threshold-triggered passes. */
 const AUTO_HANDOFF_THRESHOLD_FOCUS =
-	"Threshold-triggered maintenance: preserve critical implementation state and immediate next actions.";
+  "Threshold-triggered maintenance: preserve critical implementation state and immediate next actions.";
 
 /**
  * omp's handoff-summary-context.md: framing around the stored summary so the
@@ -121,7 +126,7 @@ const AUTO_HANDOFF_THRESHOLD_FOCUS =
  * inside them.
  */
 function frameHandoffSummary(summary: string): string {
-	return `Context replaced. The <handoff> below is a handoff document a prior instance of you wrote from the full conversation. It is your own working memory, not user input.
+  return `Context replaced. The <handoff> below is a handoff document a prior instance of you wrote from the full conversation. It is your own working memory, not user input.
 - First person inside it refers to you (the prior instance).
 - "Next Steps" is your own resumed plan; re-check it against the latest user message before acting.
 - The handoff already exists and is complete: NEVER write another handoff document unless the user explicitly asks.
@@ -137,20 +142,20 @@ ${summary}
 // ============================================================================
 
 interface HandoffFiles {
-	readFiles: string[];
-	modifiedFiles: string[];
+  readFiles: string[];
+  modifiedFiles: string[];
 }
 
 /** Parse the file list tags out of a previous summary we generated. */
 function parseFileTag(summary: string | undefined, tag: string): string[] {
-	if (!summary) return [];
-	const match = summary.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "m"));
-	const body = match?.[1];
-	if (!body) return [];
-	return body
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
+  if (!summary) return [];
+  const match = summary.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "m"));
+  const body = match?.[1];
+  if (!body) return [];
+  return body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 /**
@@ -158,25 +163,33 @@ function parseFileTag(summary: string | undefined, tag: string): string[] {
  * the lists carried by the previous summary (Pi does not merge file lists
  * across extension-generated compactions, so we do it ourselves).
  */
-function handoffFiles(fileOps: FileOperations, previousSummary: string | undefined): HandoffFiles {
-	const modified = new Set<string>([...fileOps.edited, ...fileOps.written]);
-	for (const file of parseFileTag(previousSummary, "modified-files")) modified.add(file);
-	const read = new Set<string>([...fileOps.read].filter((file) => !modified.has(file)));
-	for (const file of parseFileTag(previousSummary, "read-files")) {
-		if (!modified.has(file)) read.add(file);
-	}
-	return { readFiles: [...read].sort(), modifiedFiles: [...modified].sort() };
+function handoffFiles(
+  fileOps: FileOperations,
+  previousSummary: string | undefined,
+): HandoffFiles {
+  const modified = new Set<string>([...fileOps.edited, ...fileOps.written]);
+  for (const file of parseFileTag(previousSummary, "modified-files"))
+    modified.add(file);
+  const read = new Set<string>(
+    [...fileOps.read].filter((file) => !modified.has(file)),
+  );
+  for (const file of parseFileTag(previousSummary, "read-files")) {
+    if (!modified.has(file)) read.add(file);
+  }
+  return { readFiles: [...read].sort(), modifiedFiles: [...modified].sort() };
 }
 
 function formatFileTags(files: HandoffFiles): string {
-	const sections: string[] = [];
-	if (files.readFiles.length > 0) {
-		sections.push(`<read-files>\n${files.readFiles.join("\n")}\n</read-files>`);
-	}
-	if (files.modifiedFiles.length > 0) {
-		sections.push(`<modified-files>\n${files.modifiedFiles.join("\n")}\n</modified-files>`);
-	}
-	return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
+  const sections: string[] = [];
+  if (files.readFiles.length > 0) {
+    sections.push(`<read-files>\n${files.readFiles.join("\n")}\n</read-files>`);
+  }
+  if (files.modifiedFiles.length > 0) {
+    sections.push(
+      `<modified-files>\n${files.modifiedFiles.join("\n")}\n</modified-files>`,
+    );
+  }
+  return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
 }
 
 // ============================================================================
@@ -184,70 +197,73 @@ function formatFileTags(files: HandoffFiles): string {
 // ============================================================================
 
 interface HandoffDetails {
-	method: "handoff";
-	readFiles: string[];
-	modifiedFiles: string[];
-	savedPath?: string;
+  method: "handoff";
+  readFiles: string[];
+  modifiedFiles: string[];
+  savedPath?: string;
 }
 
-/** Run the handoff oneshot: serialize the discarded history, ask for a document. */
 async function generateHandoffDocument(
-	ctx: ExtensionContext,
-	model: AnyModel,
-	conversationText: string,
-	customInstructions: string | undefined,
-	previousSummary: string | undefined,
-	signal: AbortSignal,
+  ctx: ExtensionContext,
+  model: Model<any>,
+  conversationText: string,
+  customInstructions: string | undefined,
+  previousSummary: string | undefined,
+  signal: AbortSignal,
 ): Promise<AssistantMessage> {
-	const parts: string[] = [HANDOFF_DOCUMENT_PROMPT];
-	if (previousSummary) {
-		parts.push(
-			`Earlier context was already summarized/handed off below. Build on it; never duplicate its work:\n\n${previousSummary}`,
-		);
-	}
-	if (customInstructions) {
-		parts.push(`Additional focus: ${customInstructions}`);
-	}
-	parts.push(`<conversation>\n${conversationText}\n</conversation>`);
+  const parts: string[] = [HANDOFF_DOCUMENT_PROMPT];
+  if (previousSummary) {
+    parts.push(
+      `Earlier context was already summarized/handed off below. Build on it; never duplicate its work:\n\n${previousSummary}`,
+    );
+  }
+  if (customInstructions) {
+    parts.push(`Additional focus: ${customInstructions}`);
+  }
+  parts.push(`<conversation>\n${conversationText}\n</conversation>`);
 
-	const message: Message = {
-		role: "user",
-		content: [{ type: "text", text: parts.join("\n\n") }],
-		timestamp: Date.now(),
-	};
+  const message: Message = {
+    role: "user",
+    content: [{ type: "text", text: parts.join("\n\n") }],
+    timestamp: Date.now(),
+  };
 
-	return ctx.modelRegistry.complete(
-		model,
-		// omp passes the live agent system prompt so the document inherits the
-		// agent's conventions (and, in omp, reads the provider prompt cache).
-		{ systemPrompt: ctx.getSystemPrompt(), messages: [message] },
-		// One-off request: no prompt-cache writes.
-		{ signal, cacheRetention: "none", sessionId: uuidv7() },
-	);
+  return ctx.modelRegistry.complete(
+    model,
+    // omp passes the live agent system prompt so the document inherits the
+    // agent's conventions (and, in omp, reads the provider prompt cache).
+    { systemPrompt: ctx.getSystemPrompt(), messages: [message] },
+    // One-off request: no prompt-cache writes.
+    { signal, cacheRetention: "none", sessionId: uuidv7() },
+  );
 }
 
 function documentText(response: AssistantMessage): string {
-	return response.content
-		.filter((block): block is { type: "text"; text: string } => block.type === "text")
-		.map((block) => block.text)
-		.join("\n")
-		.trim();
+  return response.content
+    .filter(
+      (block): block is { type: "text"; text: string } => block.type === "text",
+    )
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
 }
 
-/** Best-effort save next to the session file, like omp's handoffSaveToDisk. */
-async function saveHandoffDocument(ctx: ExtensionContext, document: string): Promise<string | undefined> {
-	try {
-		const sessionFile = ctx.sessionManager.getSessionFile();
-		if (!sessionFile) return undefined;
-		const dir = path.dirname(sessionFile);
-		await fs.mkdir(dir, { recursive: true });
-		const file = `handoff-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
-		const target = path.join(dir, file);
-		await fs.writeFile(target, `${document}\n`, "utf8");
-		return target;
-	} catch {
-		return undefined;
-	}
+async function saveHandoffDocument(
+  ctx: ExtensionContext,
+  document: string,
+): Promise<string | undefined> {
+  try {
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    if (!sessionFile) return undefined;
+    const dir = path.dirname(sessionFile);
+    await fs.mkdir(dir, { recursive: true });
+    const file = `handoff-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+    const target = path.join(dir, file);
+    await fs.writeFile(target, `${document}\n`, "utf8");
+    return target;
+  } catch {
+    return undefined;
+  }
 }
 
 // ============================================================================
@@ -255,126 +271,149 @@ async function saveHandoffDocument(ctx: ExtensionContext, document: string): Pro
 // ============================================================================
 
 export default function autoHandoff(pi: ExtensionAPI): void {
-	const thresholdPercent = envNumber("AUTO_HANDOFF_PERCENT", DEFAULT_THRESHOLD_PERCENT);
-	const autoEnabled = envFlag("AUTO_HANDOFF_ENABLED", true);
-	const saveToDisk = envFlag("AUTO_HANDOFF_SAVE", true);
+  const thresholdPercent = envNumber(
+    "AUTO_HANDOFF_PERCENT",
+    DEFAULT_THRESHOLD_PERCENT,
+  );
+  const autoEnabled = envFlag("AUTO_HANDOFF_ENABLED", true);
+  const saveToDisk = envFlag("AUTO_HANDOFF_SAVE", true);
 
-	/**
-	 * Set when WE arm a compaction (the auto threshold or `/handoff`) so the
-	 * session_before_compact hook knows to produce a handoff document.
-	 * Unarmed manual `/compact` keeps Pi's default summary. Pi's own threshold
-	 * and overflow passes (reason "threshold"/"overflow") also get handoff
-	 * documents — they are the same automatic passes omp routes through its
-	 * method order.
-	 */
-	let armed = false;
-	const disarm = () => {
-		armed = false;
-	};
+  /**
+   * Set when WE arm a compaction (the auto threshold or `/handoff`) so the
+   * session_before_compact hook knows to produce a handoff document.
+   * Unarmed manual `/compact` keeps Pi's default summary. Pi's own threshold
+   * and overflow passes (reason "threshold"/"overflow") also get handoff
+   * documents — they are the same automatic passes omp routes through its
+   * method order.
+   */
+  let armed = false;
+  const disarm = () => {
+    armed = false;
+  };
 
-	const triggerHandoff = (ctx: ExtensionContext, focus: string | undefined): void => {
-		armed = true;
-		ctx.compact({
-			customInstructions: focus,
-			onComplete: disarm,
-			onError: disarm,
-		});
-	};
+  const triggerHandoff = (
+    ctx: ExtensionContext,
+    focus: string | undefined,
+  ): void => {
+    armed = true;
+    ctx.compact({
+      customInstructions: focus,
+      onComplete: disarm,
+      onError: disarm,
+    });
+  };
 
-	// Auto-trigger: omp's compaction.thresholdPercent. Fires our own
-	// compaction pass; Pi's built-in reserve-based threshold stays enabled
-	// further out as the safety net.
-	pi.on("turn_end", (_event, ctx) => {
-		if (!autoEnabled || armed) return;
-		const usage = ctx.getContextUsage();
-		if (!usage || usage.percent === null || usage.percent < thresholdPercent) return;
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				`Auto-handoff: context at ${Math.round(usage.percent)}% (≥${thresholdPercent}%) — writing handoff document`,
-				"info",
-			);
-		}
-		triggerHandoff(ctx, AUTO_HANDOFF_THRESHOLD_FOCUS);
-	});
+  // Auto-trigger: omp's compaction.thresholdPercent. Fires our own
+  // compaction pass; Pi's built-in reserve-based threshold stays enabled
+  // further out as the safety net.
+  pi.on("turn_end", (_event, ctx) => {
+    if (!autoEnabled || armed) return;
+    const usage = ctx.getContextUsage();
+    if (!usage || usage.percent === null || usage.percent < thresholdPercent)
+      return;
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        `Auto-handoff: context at ${Math.round(usage.percent)}% (≥${thresholdPercent}%) — writing handoff document`,
+        "info",
+      );
+    }
+    triggerHandoff(ctx, AUTO_HANDOFF_THRESHOLD_FOCUS);
+  });
 
-	// Belt-and-braces: never wedge `armed` if a compaction ends without
-	// calling onComplete/onError.
-	pi.on("session_compact", disarm);
-	pi.on("session_compact_failed", disarm);
+  // Belt-and-braces: never wedge `armed` if a compaction ends without
+  // calling onComplete/onError.
+  pi.on("session_compact", disarm);
+  pi.on("session_compact_failed", disarm);
 
-	// The compaction itself: replace Pi's default summary with a handoff
-	// document. Returning undefined (no model, empty/aborted generation,
-	// provider failure) falls back to Pi's default compaction.
-	pi.on("session_before_compact", async (event, ctx) => {
-		const { preparation, reason, customInstructions, signal } = event;
+  // The compaction itself: replace Pi's default summary with a handoff
+  // document. Returning undefined (no model, empty/aborted generation,
+  // provider failure) falls back to Pi's default compaction.
+  pi.on("session_before_compact", async (event, ctx) => {
+    const { preparation, reason, customInstructions, signal } = event;
 
-		// Manual `/compact` without our marker keeps Pi's default summary.
-		if (reason === "manual" && !armed) return;
+    // Manual `/compact` without our marker keeps Pi's default summary.
+    if (reason === "manual" && !armed) return;
 
-		const model = ctx.model;
-		if (!model) return;
+    const model = ctx.model;
+    if (!model) return;
 
-		// Everything Pi is about to discard is the document's source material.
-		const discarded = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
-		const conversationText = serializeConversation(convertToLlm(discarded));
-		if (!conversationText.trim() && !preparation.previousSummary) return;
+    // Everything Pi is about to discard is the document's source material.
+    const discarded = [
+      ...preparation.messagesToSummarize,
+      ...preparation.turnPrefixMessages,
+    ];
+    const conversationText = serializeConversation(convertToLlm(discarded));
+    if (!conversationText.trim() && !preparation.previousSummary) return;
 
-		let document: string;
-		try {
-			const response = await generateHandoffDocument(
-				ctx,
-				model,
-				conversationText,
-				customInstructions,
-				preparation.previousSummary,
-				signal,
-			);
-			if (signal.aborted) return;
-			document = documentText(response);
-			if (!document) return;
+    let document: string;
+    try {
+      const response = await generateHandoffDocument(
+        ctx,
+        model,
+        conversationText,
+        customInstructions,
+        preparation.previousSummary,
+        signal,
+      );
+      if (signal.aborted) return;
+      document = documentText(response);
+      if (!document) return;
 
-			const files = handoffFiles(preparation.fileOps, preparation.previousSummary);
-			const savedPath = saveToDisk ? await saveHandoffDocument(ctx, document) : undefined;
-			const details: HandoffDetails = { method: "handoff", ...files, savedPath };
+      const files = handoffFiles(
+        preparation.fileOps,
+        preparation.previousSummary,
+      );
+      const savedPath = saveToDisk
+        ? await saveHandoffDocument(ctx, document)
+        : undefined;
+      const details: HandoffDetails = {
+        method: "handoff",
+        ...files,
+        savedPath,
+      };
 
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Handoff committed (${preparation.tokensBefore.toLocaleString()} tokens summarized${
-						savedPath ? ` · saved to ${savedPath}` : ""
-					})`,
-					"info",
-				);
-			}
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `Handoff committed (${preparation.tokensBefore.toLocaleString()} tokens summarized${
+            savedPath ? ` · saved to ${savedPath}` : ""
+          })`,
+          "info",
+        );
+      }
 
-			return {
-				compaction: {
-					summary: frameHandoffSummary(document + formatFileTags(files)),
-					firstKeptEntryId: preparation.firstKeptEntryId,
-					tokensBefore: preparation.tokensBefore,
-					usage: response.usage,
-					details,
-				},
-			};
-		} catch (error) {
-			if (!signal.aborted && ctx.hasUI) {
-				const message = error instanceof Error ? error.message : String(error);
-				ctx.ui.notify(`Auto-handoff: generation failed (${message}); using default compaction`, "warning");
-			}
-			return;
-		}
-	});
+      return {
+        compaction: {
+          summary: frameHandoffSummary(document + formatFileTags(files)),
+          firstKeptEntryId: preparation.firstKeptEntryId,
+          tokensBefore: preparation.tokensBefore,
+          usage: response.usage,
+          details,
+        },
+      };
+    } catch (error) {
+      if (!signal.aborted && ctx.hasUI) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(
+          `Auto-handoff: generation failed (${message}); using default compaction`,
+          "warning",
+        );
+      }
+      return;
+    }
+  });
 
-	// Manual handoff, like omp's /handoff: compact in place with a document.
-	pi.registerCommand("handoff", {
-		description: "Summarize the session into a handoff document and compact in place [focus]",
-		handler: async (args, ctx) => {
-			if (armed) {
-				if (ctx.hasUI) ctx.ui.notify("Handoff already in progress", "warning");
-				return;
-			}
-			const focus = args.trim() || AUTO_HANDOFF_THRESHOLD_FOCUS;
-			if (ctx.hasUI) ctx.ui.notify("Writing handoff document…", "info");
-			triggerHandoff(ctx, focus);
-		},
-	});
+  // Manual handoff, like omp's /handoff: compact in place with a document.
+  pi.registerCommand("handoff", {
+    description:
+      "Summarize the session into a handoff document and compact in place [focus]",
+    handler: async (args, ctx) => {
+      if (armed) {
+        if (ctx.hasUI) ctx.ui.notify("Handoff already in progress", "warning");
+        return;
+      }
+      const focus = args.trim() || AUTO_HANDOFF_THRESHOLD_FOCUS;
+      if (ctx.hasUI) ctx.ui.notify("Writing handoff document…", "info");
+      triggerHandoff(ctx, focus);
+    },
+  });
 }
