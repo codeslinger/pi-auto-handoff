@@ -23,13 +23,16 @@
  *   /handoff [focus]  Write a handoff document and compact in place.
  *                     Manual `/compact` keeps Pi's default summary.
  *
- * Configuration (environment variables):
- *   AUTO_HANDOFF_PERCENT   Context percentage that triggers an automatic
- *                          handoff (default 80).
- *   AUTO_HANDOFF_ENABLED   "0"/"false" disables the automatic trigger;
- *                          `/handoff` keeps working (default enabled).
- *   AUTO_HANDOFF_SAVE      "0"/"false" disables saving the document to disk
- *                          next to the session file (default enabled).
+ * Configuration (auto-handoff.json — next to Pi's settings.json in the
+ * agent directory, overridable per project in <cwd>/.pi/auto-handoff.json):
+ *   percent   Context percentage that triggers an automatic handoff
+ *             (default 80).
+ *   enabled   false disables the automatic trigger; `/handoff` keeps
+ *             working (default true).
+ *   save      false disables saving the document to disk next to the
+ *             session file (default true).
+ * Config is read per event, so edits apply without restarting Pi; a
+ * missing or malformed file falls back to defaults (malformed warns once).
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -43,6 +46,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   convertToLlm,
+  getAgentDir,
   serializeConversation,
 } from "@earendil-works/pi-coding-agent";
 
@@ -50,17 +54,116 @@ import {
 // Configuration
 // ============================================================================
 
-const DEFAULT_THRESHOLD_PERCENT = 80;
+// Configuration lives in auto-handoff.json: <agent-dir>/auto-handoff.json
+// (the same directory as Pi's settings.json) overridden per project by
+// <cwd>/.pi/auto-handoff.json. Project values win per key.
 
-function envFlag(name: string, fallback: boolean): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
-  if (raw === undefined || raw === "") return fallback;
-  return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
+const DEFAULT_THRESHOLD_PERCENT = 80;
+const CONFIG_FILE_NAME = "auto-handoff.json";
+
+/** Resolved configuration for one event. */
+interface AutoHandoffConfig {
+  /** Context percentage that triggers an automatic handoff. */
+  percent: number;
+  /** Whether the automatic threshold trigger is enabled. */
+  enabled: boolean;
+  /** Whether handoff documents are saved next to the session file. */
+  save: boolean;
 }
 
-function envNumber(name: string, fallback: number): number {
-  const raw = Number(process.env[name]?.trim());
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+const DEFAULT_CONFIG: AutoHandoffConfig = {
+  percent: DEFAULT_THRESHOLD_PERCENT,
+  enabled: true,
+  save: true,
+};
+
+/** Warn once per file per runtime — otherwise a malformed config file
+ *  silently reverts every event to defaults, which is hard to debug. */
+const warnedConfigFiles = new Set<string>();
+
+function warnConfigFile(
+  file: string,
+  ctx: ExtensionContext,
+  message: string,
+): void {
+  if (!ctx.hasUI || warnedConfigFiles.has(file)) return;
+  warnedConfigFiles.add(file);
+  ctx.ui.notify(`Auto-handoff: ignoring ${file} (${message})`, "warning");
+}
+
+/** Booleans, plus the legacy env-var spellings this file replaces. */
+function flagValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    return raw === "" ? fallback : !["0", "false", "no", "off"].includes(raw);
+  }
+  return fallback;
+}
+
+function percentValue(value: unknown, fallback: number): number {
+  const raw = typeof value === "string" ? Number(value.trim()) : value;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0
+    ? raw
+    : fallback;
+}
+
+/** Validate one parsed file onto a base config; invalid keys keep the base. */
+function applyConfigObject(
+  base: AutoHandoffConfig,
+  value: Record<string, unknown> | undefined,
+): AutoHandoffConfig {
+  if (!value) return base;
+  return {
+    percent: percentValue(value.percent, base.percent),
+    enabled: flagValue(value.enabled, base.enabled),
+    save: flagValue(value.save, base.save),
+  };
+}
+
+/** Read and parse one config file. Missing files are silent (they just mean
+ *  defaults or agent-dir values apply); unreadable or malformed files warn
+ *  once and are ignored. */
+async function readConfigObject(
+  file: string,
+  ctx: ExtensionContext,
+): Promise<Record<string, unknown> | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") {
+      warnConfigFile(file, ctx, (error as Error).message);
+    }
+    return undefined;
+  }
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // strip BOM, like Pi
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      warnConfigFile(file, ctx, "expected a JSON object");
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    warnConfigFile(file, ctx, (error as Error).message);
+    return undefined;
+  }
+}
+
+/** Effective config for one event: agent-dir values overridden by project. */
+async function loadConfig(ctx: ExtensionContext): Promise<AutoHandoffConfig> {
+  const files = [
+    path.join(getAgentDir(), CONFIG_FILE_NAME),
+    path.resolve(ctx.cwd, ".pi", CONFIG_FILE_NAME),
+  ];
+  let config = DEFAULT_CONFIG;
+  for (const file of files) {
+    config = applyConfigObject(config, await readConfigObject(file, ctx));
+  }
+  return config;
 }
 
 // ============================================================================
@@ -271,13 +374,6 @@ async function saveHandoffDocument(
 // ============================================================================
 
 export default function autoHandoff(pi: ExtensionAPI): void {
-  const thresholdPercent = envNumber(
-    "AUTO_HANDOFF_PERCENT",
-    DEFAULT_THRESHOLD_PERCENT,
-  );
-  const autoEnabled = envFlag("AUTO_HANDOFF_ENABLED", true);
-  const saveToDisk = envFlag("AUTO_HANDOFF_SAVE", true);
-
   /**
    * Set when WE arm a compaction (the auto threshold or `/handoff`) so the
    * session_before_compact hook knows to produce a handoff document.
@@ -306,14 +402,16 @@ export default function autoHandoff(pi: ExtensionAPI): void {
   // Auto-trigger: omp's compaction.thresholdPercent. Fires our own
   // compaction pass; Pi's built-in reserve-based threshold stays enabled
   // further out as the safety net.
-  pi.on("turn_end", (_event, ctx) => {
-    if (!autoEnabled || armed) return;
+  pi.on("turn_end", async (_event, ctx) => {
+    if (armed) return;
+    const config = await loadConfig(ctx);
+    if (!config.enabled) return;
     const usage = ctx.getContextUsage();
-    if (!usage || usage.percent === null || usage.percent < thresholdPercent)
+    if (!usage || usage.percent === null || usage.percent < config.percent)
       return;
     if (ctx.hasUI) {
       ctx.ui.notify(
-        `Auto-handoff: context at ${Math.round(usage.percent)}% (≥${thresholdPercent}%) — writing handoff document`,
+        `Auto-handoff: context at ${Math.round(usage.percent)}% (≥${config.percent}%) — writing handoff document`,
         "info",
       );
     }
@@ -363,7 +461,8 @@ export default function autoHandoff(pi: ExtensionAPI): void {
         preparation.fileOps,
         preparation.previousSummary,
       );
-      const savedPath = saveToDisk
+      const { save } = await loadConfig(ctx);
+      const savedPath = save
         ? await saveHandoffDocument(ctx, document)
         : undefined;
       const details: HandoffDetails = {

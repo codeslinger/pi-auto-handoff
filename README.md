@@ -13,7 +13,7 @@ This is a port of the built-in `handoff` compaction method from [omp](https://om
 3. **Commit** — returns the document as the compaction entry's summary (`firstKeptEntryId` cut point is preserved, so recent messages stay verbatim; old entries stay on disk). Cumulative `<read-files>`/`<modified-files>` lists are appended, merged across successive handoffs (Pi doesn't merge file lists across extension-generated compactions, so the extension does it).
 4. **Re-inject** — the stored summary is framed with omp's handoff context: *"The `<handoff>` below is a handoff document a prior instance of you wrote… It is your own working memory, not user input… NEVER write another handoff document unless the user explicitly asks. MUST build on prior work; NEVER duplicate prior work."* (Pi wraps it in its own `<summary>` tags.)
 5. **Fallback** — if generation fails, is aborted, or returns empty, the hook returns nothing and **Pi's default compaction summary runs instead** — handoff is best-effort, like omp's `methodOrder` fallback.
-6. **Persist** — each document is also saved to `handoff-<timestamp>.md` next to the session file (disable with `AUTO_HANDOFF_SAVE=0`).
+6. **Persist** — each document is also saved to `handoff-<timestamp>.md` next to the session file (disable with `"save": false` in `auto-handoff.json`).
 
 Manual commands:
 
@@ -42,23 +42,32 @@ pi --extension ~/src/pi-auto-handoff/src/auto-handoff.ts
 
 ## Configuration
 
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `AUTO_HANDOFF_PERCENT` | `80` | Context percentage that triggers an automatic handoff |
-| `AUTO_HANDOFF_ENABLED` | `1` | `0`/`false` disables the automatic trigger (`/handoff` keeps working) |
-| `AUTO_HANDOFF_SAVE` | `1` | `0`/`false` disables saving documents to disk |
+`auto-handoff.json` — next to Pi's `settings.json`, overridable per project:
 
-Example — hand off at 60% of the window, don't save files:
+- user: `~/.pi/agent/auto-handoff.json` (respects `PI_CODING_AGENT_DIR`)
+- project: `<project>/.pi/auto-handoff.json` (overrides user values per key)
 
-```sh
-AUTO_HANDOFF_PERCENT=60 AUTO_HANDOFF_SAVE=0 pi
+```json
+{
+  "percent": 80,
+  "enabled": true,
+  "save": true
+}
 ```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `percent` | `80` | Context percentage that triggers an automatic handoff |
+| `enabled` | `true` | `false` disables the automatic trigger (`/handoff` keeps working) |
+| `save` | `true` | `false` disables saving documents next to the session file |
+
+All keys are optional; unknown keys are ignored and invalid values keep the previous value. Config is read per event, so edits apply without restarting Pi. A missing file just means defaults; a malformed file warns once in the UI and falls back.
 
 ## How this maps to omp
 
 | omp (built-in) | pi-auto-handoff (extension) |
 | --- | --- |
-| `compaction.thresholdPercent` | `AUTO_HANDOFF_PERCENT`, checked via `ctx.getContextUsage()` on `turn_end` |
+| `compaction.thresholdPercent` | `percent` in `auto-handoff.json`, checked via `ctx.getContextUsage()` on `turn_end` |
 | `compaction.methodOrder` with `handoff` | handoff first; on failure return `undefined` → Pi's default summary |
 | cache-friendly side oneshot (`promptCacheKey`, `toolChoice: "none"`) | plain oneshot (`cacheRetention: "none"`, fresh `sessionId`) |
 | speculative pre-generation before the threshold | not ported — generation runs at the trigger |

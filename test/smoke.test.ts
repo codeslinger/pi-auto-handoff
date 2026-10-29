@@ -25,10 +25,16 @@ interface FakeExtension {
   >;
 }
 
-function loadExtension(): FakeExtension {
-  for (const key of Object.keys(process.env)) {
-    if (key.startsWith("AUTO_HANDOFF_")) delete process.env[key];
-  }
+/**
+ * Load the extension with `PI_CODING_AGENT_DIR` pointed at a fresh empty
+ * directory, so config-file reads never see the real user configuration.
+ * Tests that exercise configuration write into the returned directory.
+ */
+async function loadExtension(): Promise<FakeExtension & { agentDir: string }> {
+  const agentDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "pi-auto-handoff-agent-"),
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   const handlers = new Map<string, (event: Any, ctx: Any) => unknown>();
   const commands = new Map<
     string,
@@ -44,7 +50,7 @@ function loadExtension(): FakeExtension {
     },
   };
   autoHandoff(pi);
-  return { handlers, commands };
+  return { handlers, commands, agentDir };
 }
 
 function fakeContext(overrides: Partial<Any> = {}): Any {
@@ -52,6 +58,9 @@ function fakeContext(overrides: Partial<Any> = {}): Any {
   return {
     notifications,
     hasUI: true,
+    // No .pi/auto-handoff.json here; config tests override with a real
+    // temporary project directory.
+    cwd: path.join(os.tmpdir(), "pi-auto-handoff-no-project"),
     ui: {
       notify: (message: string) => {
         notifications.push(message);
@@ -157,16 +166,16 @@ const turnEndEvent: Any = {
 };
 
 test("turn_end triggers compaction at or above the threshold and re-arms after completion", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const compactCalls: Any[] = [];
   const ctx = fakeContext({
     compact: (options: Any) => compactCalls.push(options),
   });
 
-  const turnEnd = handlers.get("turn_end")!;
+  const turnEnd = handlers.get("turn_end") as Any;
 
   // Below threshold: no compaction.
-  (turnEnd as (event: Any, ctx: Any) => void)(
+  await turnEnd(
     { ...turnEndEvent },
     {
       ...ctx,
@@ -180,7 +189,7 @@ test("turn_end triggers compaction at or above the threshold and re-arms after c
   assert.equal(compactCalls.length, 0);
 
   // At/above threshold: compaction armed once with the threshold focus.
-  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  await turnEnd(turnEndEvent, ctx);
   assert.equal(compactCalls.length, 1);
   assert.match(
     String(compactCalls[0]?.customInstructions),
@@ -188,18 +197,127 @@ test("turn_end triggers compaction at or above the threshold and re-arms after c
   );
 
   // While armed, no second trigger.
-  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  await turnEnd(turnEndEvent, ctx);
   assert.equal(compactCalls.length, 1);
 
   // onComplete disarms; a later high-usage turn triggers again.
   compactCalls[0]?.onComplete?.();
-  (turnEnd as (event: Any, ctx: Any) => void)(turnEndEvent, ctx);
+  await turnEnd(turnEndEvent, ctx);
   assert.equal(compactCalls.length, 2);
+});
+
+test("config is read from auto-handoff.json; project overrides the agent dir", async () => {
+  const { handlers, agentDir } = await loadExtension();
+  await fs.writeFile(
+    path.join(agentDir, "auto-handoff.json"),
+    JSON.stringify({ percent: 60 }),
+  );
+
+  const compactCalls: Any[] = [];
+  const turnEnd = handlers.get("turn_end") as Any;
+
+  // 65% ≥ the configured 60% (the default would be 80%) → triggers.
+  await turnEnd(
+    turnEndEvent,
+    fakeContext({
+      compact: (options: Any) => compactCalls.push(options),
+      getContextUsage: () => ({
+        tokens: 65_000,
+        contextWindow: 100_000,
+        percent: 65,
+      }),
+    }),
+  );
+  assert.equal(compactCalls.length, 1);
+  compactCalls[0]?.onComplete?.();
+
+  // <cwd>/.pi/auto-handoff.json overrides the agent dir per key.
+  const projectDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "pi-auto-handoff-project-"),
+  );
+  await fs.mkdir(path.join(projectDir, ".pi"), { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, ".pi", "auto-handoff.json"),
+    JSON.stringify({ percent: 95 }),
+  );
+
+  // 85% < the overridden 95% → no trigger.
+  await turnEnd(
+    turnEndEvent,
+    fakeContext({
+      cwd: projectDir,
+      compact: (options: Any) => compactCalls.push(options),
+    }),
+  );
+  assert.equal(compactCalls.length, 1);
+
+  // enabled: false disables the automatic trigger entirely.
+  await fs.writeFile(
+    path.join(projectDir, ".pi", "auto-handoff.json"),
+    JSON.stringify({ enabled: false }),
+  );
+  await turnEnd(
+    turnEndEvent,
+    fakeContext({
+      cwd: projectDir,
+      compact: (options: Any) => compactCalls.push(options),
+    }),
+  );
+  assert.equal(compactCalls.length, 1);
+});
+
+test("a malformed config file warns once and falls back to defaults", async () => {
+  const { handlers, agentDir } = await loadExtension();
+  await fs.writeFile(path.join(agentDir, "auto-handoff.json"), "{ not json");
+
+  const compactCalls: Any[] = [];
+  const ctx = fakeContext({
+    compact: (options: Any) => compactCalls.push(options),
+  });
+  const turnEnd = handlers.get("turn_end") as Any;
+  const warnings = () =>
+    ctx.notifications.filter((n: string) => /auto-handoff\.json/.test(n));
+
+  // Defaults apply (85% ≥ default 80%) → triggers.
+  await turnEnd(turnEndEvent, ctx);
+  assert.equal(compactCalls.length, 1);
+  assert.equal(warnings().length, 1);
+
+  // The warning fires once per file, not once per event.
+  compactCalls[0]?.onComplete?.();
+  await turnEnd(turnEndEvent, ctx);
+  assert.equal(compactCalls.length, 2);
+  assert.equal(warnings().length, 1);
+});
+
+test("save: false disables saving the document to disk", async () => {
+  const { handlers, agentDir } = await loadExtension();
+  await fs.writeFile(
+    path.join(agentDir, "auto-handoff.json"),
+    JSON.stringify({ save: false }),
+  );
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-auto-handoff-"));
+  const ctx = fakeContext({
+    model: { provider: "test", id: "test-model", contextWindow: 100_000 },
+    modelRegistry: fakeModelRegistry("## Goal\nsave-disabled doc"),
+    sessionManager: {
+      getSessionFile: () => path.join(tmpDir, "session.jsonl"),
+    },
+  });
+
+  const result = (await (handlers.get("session_before_compact") as Any)(
+    fakeBeforeCompactEvent(fakePreparation(), "threshold"),
+    ctx,
+  )) as Any;
+
+  assert.equal(result.compaction.details.savedPath, undefined);
+  assert.deepEqual(await fs.readdir(tmpDir), []);
 });
 
 test("session_before_compact produces a framed handoff summary with file lists", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-auto-handoff-"));
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const registry = fakeModelRegistry(
     "## Goal\nFix the parser bug\n\n## Next Steps\n1. Run the tests",
   );
@@ -217,7 +335,7 @@ test("session_before_compact produces a framed handoff summary with file lists",
     ...ctx,
     compact: (options: Any) => compactCalls.push(options),
   };
-  (handlers.get("turn_end") as Any)(turnEndEvent, compactCtx);
+  await (handlers.get("turn_end") as Any)(turnEndEvent, compactCtx);
   assert.equal(compactCalls.length, 1);
 
   const result = (await (handlers.get("session_before_compact") as Any)(
@@ -264,7 +382,7 @@ test("session_before_compact produces a framed handoff summary with file lists",
 });
 
 test("unarmed manual /compact falls back to Pi's default summary", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const ctx = fakeContext({
     model: { provider: "test", id: "test-model", contextWindow: 100_000 },
     modelRegistry: fakeModelRegistry("## Goal\nshould not be used"),
@@ -278,7 +396,7 @@ test("unarmed manual /compact falls back to Pi's default summary", async () => {
 });
 
 test("threshold and overflow passes get handoff documents even when unarmed", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   for (const reason of ["threshold", "overflow"]) {
     const ctx = fakeContext({
       model: { provider: "test", id: "test-model", contextWindow: 100_000 },
@@ -296,7 +414,7 @@ test("threshold and overflow passes get handoff documents even when unarmed", as
 });
 
 test("previous summary file lists are merged cumulatively", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const ctx = fakeContext({
     model: { provider: "test", id: "test-model", contextWindow: 100_000 },
     modelRegistry: fakeModelRegistry("## Goal\ndoc"),
@@ -314,7 +432,7 @@ test("previous summary file lists are merged cumulatively", async () => {
 });
 
 test("generation failure falls back to default compaction", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const ctx = fakeContext({
     model: { provider: "test", id: "test-model", contextWindow: 100_000 },
     modelRegistry: {
@@ -332,7 +450,7 @@ test("generation failure falls back to default compaction", async () => {
 });
 
 test("empty or aborted generation falls back to default compaction", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
 
   // Empty document.
   const emptyCtx = fakeContext({
@@ -364,7 +482,7 @@ test("empty or aborted generation falls back to default compaction", async () =>
 });
 
 test("no model falls back to default compaction", async () => {
-  const { handlers } = loadExtension();
+  const { handlers } = await loadExtension();
   const ctx = fakeContext({ model: undefined });
   const result = await (handlers.get("session_before_compact") as Any)(
     fakeBeforeCompactEvent(fakePreparation(), "threshold"),
@@ -374,7 +492,7 @@ test("no model falls back to default compaction", async () => {
 });
 
 test("/handoff command arms a focused compaction and is idempotent while in flight", async () => {
-  const { handlers, commands } = loadExtension();
+  const { handlers, commands } = await loadExtension();
   const compactCalls: Any[] = [];
   const ctx = fakeContext({
     compact: (options: Any) => compactCalls.push(options),
