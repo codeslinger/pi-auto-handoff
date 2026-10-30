@@ -1,9 +1,20 @@
 {
-	"name": "pi-auto-handoff",
+	"name": "@codeslinger001/pi-auto-handoff",
 	"version": "0.1.0",
 	"description": "Threshold-triggered handoff compaction for the Pi coding agent (ports omp's auto-handoff method)",
 	"type": "module",
 	"main": "src/auto-handoff.ts",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/codeslinger/pi-auto-handoff.git"
+	},
+	"author": "Toby DiPasquale <toby@cbcg.net>",
+	"files": [
+		"src"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"test": "node --test test/*.test.ts"
