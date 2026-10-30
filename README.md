@@ -24,6 +24,12 @@ Manual commands:
 
 The extension imports only Pi's own packages (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`), which Pi's loader (jiti) resolves from its own install — no runtime dependencies.
 
+Get the repo from GitHub:
+
+```sh
+git clone https://github.com/codeslinger/pi-auto-handoff.git
+```
+
 **Option A — user extension (recommended):**
 
 ```sh
