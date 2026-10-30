@@ -1,6 +1,6 @@
 {
 	"name": "@codeslinger001/pi-auto-handoff",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Threshold-triggered handoff compaction for the Pi coding agent (ports omp's auto-handoff method)",
 	"type": "module",
 	"main": "src/auto-handoff.ts",
@@ -15,11 +15,17 @@
 	"publishConfig": {
 		"access": "public"
 	},
+	"pi": {
+		"extensions": [
+			"./src/auto-handoff.ts"
+		]
+	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"test": "node --test test/*.test.ts"
 	},
 	"keywords": [
+		"pi-package",
 		"pi",
 		"pi-coding-agent",
 		"extension",
@@ -27,6 +33,10 @@
 		"handoff"
 	],
 	"license": "MIT",
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
+	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-coding-agent": "1.4.0",

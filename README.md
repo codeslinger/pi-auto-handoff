@@ -22,32 +22,30 @@ Manual commands:
 
 ## Install
 
-The extension imports only Pi's own packages (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`), which Pi's loader (jiti) resolves from its own install — no runtime dependencies.
+The extension imports only Pi's host-provided packages (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`), declared as `peerDependencies` — Pi resolves them to its own install, so there are no runtime dependencies to download.
 
-**Option A — from npm (recommended):**
+**Option A — as a Pi package (recommended):**
 
 ```sh
-npm install -g @codeslinger001/pi-auto-handoff
-mkdir -p ~/.pi/agent/extensions
-ln -s "$(npm root -g)/@codeslinger001/pi-auto-handoff/src/auto-handoff.ts" ~/.pi/agent/extensions/auto-handoff.ts
+pi install npm:@codeslinger001/pi-auto-handoff
 ```
 
-**Option B — from GitHub:**
+Pi installs it into its own package directory, records it in `~/.pi/agent/settings.json`, and auto-loads it in every session. `pi list` shows it; `pi update --extensions` updates it; `pi remove npm:@codeslinger001/pi-auto-handoff` uninstalls.
+
+**Option B — from a Git checkout:**
 
 ```sh
 git clone https://github.com/codeslinger/pi-auto-handoff.git
-# with this repo checked out at ~/src/pi-auto-handoff (or wherever you keep sources)
-mkdir -p ~/.pi/agent/extensions
-ln -s ~/src/pi-auto-handoff/src/auto-handoff.ts ~/.pi/agent/extensions/auto-handoff.ts
+pi install ./pi-auto-handoff   # local package — loaded from path, not copied
 ```
 
-**Option C — load directly:**
+**Option C — load directly for one run:**
 
 ```sh
 pi --extension ~/src/pi-auto-handoff/src/auto-handoff.ts
 ```
 
-**Option D — project extension:** copy/symlink into `<project>/.pi/extensions/`.
+**Option D — user/project extension directory:** symlink `src/auto-handoff.ts` into `~/.pi/agent/extensions/` or `<project>/.pi/extensions/` (Pi loads `.ts`/`.js` files there).
 
 ## Configuration
 
