@@ -8,7 +8,7 @@ This is a port of the built-in `handoff` compaction method from [omp](https://om
 
 ## What it does
 
-1. **Trigger** — watches `turn_end`; when `ctx.getContextUsage().percent` ≥ the threshold (default **80%**), it arms a compaction pass. Pi's built-in reserve-based auto-compaction stays enabled further out as the safety net.
+1. **Trigger** — watches `agent_settled`, the safe point after an agent run fully settles and the agent is idle; when `ctx.getContextUsage().percent` ≥ the threshold (default **80%**), it arms a compaction pass. (Not `turn_end`: that fires mid-run at every turn boundary, and `ctx.compact()` aborts the current agent operation first — triggering there would kill the in-flight task the moment it crosses the threshold, with nothing to resume it.) Pi's built-in reserve-based auto-compaction stays enabled further out as the safety net.
 2. **Generate** — on `session_before_compact`, instead of letting Pi summarize, it serializes the messages Pi is about to discard and asks the active model to write a handoff document (omp's prompt, adapted): Goal / Constraints & Preferences / Progress / Key Decisions / Critical Context / Next Steps, imperative voice, no meta-steps.
 3. **Commit** — returns the document as the compaction entry's summary (`firstKeptEntryId` cut point is preserved, so recent messages stay verbatim; old entries stay on disk). Cumulative `<read-files>`/`<modified-files>` lists are appended, merged across successive handoffs (Pi doesn't merge file lists across extension-generated compactions, so the extension does it).
 4. **Re-inject** — the stored summary is framed with omp's handoff context: *"The `<handoff>` below is a handoff document a prior instance of you wrote… It is your own working memory, not user input… NEVER write another handoff document unless the user explicitly asks. MUST build on prior work; NEVER duplicate prior work."* (Pi wraps it in its own `<summary>` tags.)
@@ -74,7 +74,7 @@ All keys are optional; unknown keys are ignored and invalid values keep the prev
 
 | omp (built-in) | pi-auto-handoff (extension) |
 | --- | --- |
-| `compaction.thresholdPercent` | `percent` in `auto-handoff.json`, checked via `ctx.getContextUsage()` on `turn_end` |
+| `compaction.thresholdPercent` | `percent` in `auto-handoff.json`, checked via `ctx.getContextUsage()` on `agent_settled` (between runs, so compaction never aborts an in-flight task) |
 | `compaction.methodOrder` with `handoff` | handoff first; on failure return `undefined` → Pi's default summary |
 | cache-friendly side oneshot (`promptCacheKey`, `toolChoice: "none"`) | plain oneshot (`cacheRetention: "none"`, fresh `sessionId`) |
 | speculative pre-generation before the threshold | not ported — generation runs at the trigger |

@@ -152,31 +152,23 @@ function fakeModelRegistry(documentText: string): Any {
   };
 }
 
-const turnEndEvent: Any = {
-  type: "turn_end",
-  turnIndex: 0,
-  message: {
-    role: "assistant",
-    content: [{ type: "text", text: "done" }],
-    timestamp: Date.now(),
-  },
-  toolResults: [],
-  messageEntryId: "entry-10",
-  toolResultEntryIds: [],
+const settledEvent: Any = {
+  type: "agent_settled",
+  aborted: false,
 };
 
-test("turn_end triggers compaction at or above the threshold and re-arms after completion", async () => {
+test("agent_settled triggers compaction at or above the threshold and re-arms after completion", async () => {
   const { handlers } = await loadExtension();
   const compactCalls: Any[] = [];
   const ctx = fakeContext({
     compact: (options: Any) => compactCalls.push(options),
   });
 
-  const turnEnd = handlers.get("turn_end") as Any;
+  const settled = handlers.get("agent_settled") as Any;
 
   // Below threshold: no compaction.
-  await turnEnd(
-    { ...turnEndEvent },
+  await settled(
+    settledEvent,
     {
       ...ctx,
       getContextUsage: () => ({
@@ -189,7 +181,7 @@ test("turn_end triggers compaction at or above the threshold and re-arms after c
   assert.equal(compactCalls.length, 0);
 
   // At/above threshold: compaction armed once with the threshold focus.
-  await turnEnd(turnEndEvent, ctx);
+  await settled(settledEvent, ctx);
   assert.equal(compactCalls.length, 1);
   assert.match(
     String(compactCalls[0]?.customInstructions),
@@ -197,12 +189,12 @@ test("turn_end triggers compaction at or above the threshold and re-arms after c
   );
 
   // While armed, no second trigger.
-  await turnEnd(turnEndEvent, ctx);
+  await settled(settledEvent, ctx);
   assert.equal(compactCalls.length, 1);
 
-  // onComplete disarms; a later high-usage turn triggers again.
+  // onComplete disarms; a later high-usage run triggers again.
   compactCalls[0]?.onComplete?.();
-  await turnEnd(turnEndEvent, ctx);
+  await settled(settledEvent, ctx);
   assert.equal(compactCalls.length, 2);
 });
 
@@ -214,11 +206,11 @@ test("config is read from auto-handoff.json; project overrides the agent dir", a
   );
 
   const compactCalls: Any[] = [];
-  const turnEnd = handlers.get("turn_end") as Any;
+  const settled = handlers.get("agent_settled") as Any;
 
   // 65% ≥ the configured 60% (the default would be 80%) → triggers.
-  await turnEnd(
-    turnEndEvent,
+  await settled(
+    settledEvent,
     fakeContext({
       compact: (options: Any) => compactCalls.push(options),
       getContextUsage: () => ({
@@ -242,8 +234,8 @@ test("config is read from auto-handoff.json; project overrides the agent dir", a
   );
 
   // 85% < the overridden 95% → no trigger.
-  await turnEnd(
-    turnEndEvent,
+  await settled(
+    settledEvent,
     fakeContext({
       cwd: projectDir,
       compact: (options: Any) => compactCalls.push(options),
@@ -256,8 +248,8 @@ test("config is read from auto-handoff.json; project overrides the agent dir", a
     path.join(projectDir, ".pi", "auto-handoff.json"),
     JSON.stringify({ enabled: false }),
   );
-  await turnEnd(
-    turnEndEvent,
+  await settled(
+    settledEvent,
     fakeContext({
       cwd: projectDir,
       compact: (options: Any) => compactCalls.push(options),
@@ -274,18 +266,18 @@ test("a malformed config file warns once and falls back to defaults", async () =
   const ctx = fakeContext({
     compact: (options: Any) => compactCalls.push(options),
   });
-  const turnEnd = handlers.get("turn_end") as Any;
+  const settled = handlers.get("agent_settled") as Any;
   const warnings = () =>
     ctx.notifications.filter((n: string) => /auto-handoff\.json/.test(n));
 
   // Defaults apply (85% ≥ default 80%) → triggers.
-  await turnEnd(turnEndEvent, ctx);
+  await settled(settledEvent, ctx);
   assert.equal(compactCalls.length, 1);
   assert.equal(warnings().length, 1);
 
   // The warning fires once per file, not once per event.
   compactCalls[0]?.onComplete?.();
-  await turnEnd(turnEndEvent, ctx);
+  await settled(settledEvent, ctx);
   assert.equal(compactCalls.length, 2);
   assert.equal(warnings().length, 1);
 });
@@ -329,13 +321,13 @@ test("session_before_compact produces a framed handoff summary with file lists",
     },
   });
 
-  // Arm via turn_end so the pass counts as ours.
+  // Arm via agent_settled so the pass counts as ours.
   const compactCalls: Any[] = [];
   const compactCtx = {
     ...ctx,
     compact: (options: Any) => compactCalls.push(options),
   };
-  await (handlers.get("turn_end") as Any)(turnEndEvent, compactCtx);
+  await (handlers.get("agent_settled") as Any)(settledEvent, compactCtx);
   assert.equal(compactCalls.length, 1);
 
   const result = (await (handlers.get("session_before_compact") as Any)(

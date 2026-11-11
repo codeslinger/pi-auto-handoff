@@ -399,10 +399,17 @@ export default function autoHandoff(pi: ExtensionAPI): void {
     });
   };
 
-  // Auto-trigger: omp's compaction.thresholdPercent. Fires our own
-  // compaction pass; Pi's built-in reserve-based threshold stays enabled
-  // further out as the safety net.
-  pi.on("turn_end", async (_event, ctx) => {
+  // Auto-trigger: omp's compaction.thresholdPercent. Runs between agent
+  // runs, on agent_settled — the safe point after a run fully settles and
+  // no retry, compaction, or queued continuation will run, so the agent is
+  // idle. Triggering from turn_end instead would abort the in-flight run —
+  // ctx.compact aborts the current agent operation first — killing the
+  // task mid-flight exactly when a long tool-calling run crosses the
+  // threshold, with nothing to resume it afterwards. Pi's built-in
+  // reserve-based threshold stays enabled further out as the safety net;
+  // those mid-run passes (reason "threshold"/"overflow") are intercepted
+  // below and also become handoff documents.
+  pi.on("agent_settled", async (_event, ctx) => {
     if (armed) return;
     const config = await loadConfig(ctx);
     if (!config.enabled) return;
