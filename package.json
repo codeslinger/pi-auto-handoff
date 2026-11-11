@@ -1,6 +1,6 @@
 {
 	"name": "@codeslinger001/pi-auto-handoff",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Threshold-triggered handoff compaction for the Pi coding agent (ports omp's auto-handoff method)",
 	"type": "module",
 	"main": "src/auto-handoff.ts",
